@@ -80,6 +80,28 @@ watch 'docker compose exec orders-db psql -U orders_user -d orders_db -c "SELECT
 
 ---
 
+## Arquitectura del Sistema
+
+```mermaid
+flowchart LR
+  U[Cliente] -->|HTTP Checkout| A[Order/Checkout Service - Hono]
+  A -->|Write| P1[(Postgres Orders)]
+  A -->|Publish event| K[(Kafka Broker)]
+  
+  K -->|order.created| B[Inventory/Fulfillment Service - Hono]
+  B -->|Write| P2[(Postgres Inventory)]
+  
+  B -->|Publish event: inventory.reserved / inventory.rejected| K
+  K -->|Consume| A
+  
+  A -->|Update Order Status| P1
+  
+  K -->|Events stream| BI[BI Consumer / Analytics]
+  BI --> DWH[(DWH / Reports)]
+```
+
+---
+
 ## Testing Flows
 
 Crea una orden completa: orden → inventario reserva → orden confirmada.
