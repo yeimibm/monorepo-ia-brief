@@ -1,0 +1,250 @@
+version: "3.8"
+
+# =============================================================================
+# ARQUITECTURA EVENT-DRIVEN E-COMMERCE CON REDPANDA + POSTGRES
+# =============================================================================
+# 
+# Contenedores:
+#   - redpanda:     Broker Kafka compatible (sustituye RabbitMQ/Kafka)
+#   - orders-db:    PostgreSQL para datos de órdenes
+#   - inventory-db: PostgreSQL para datos de inventario
+#   - order-service:      Servicio de órdenes (a implementar)
+#   - inventory-service:  Servicio de inventario (a implementar)
+#
+# Flujo de eventos:
+#   order-service --[order.created]--> Redpanda --[order.created]--> inventory-service
+#   inventory-service --[inventory.reserved/rejected]--> Redpanda --[]--> order-service
+#
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # ZOOKEEPER: Coordinador para Kafka
+  # ---------------------------------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    hostname: zookeeper
+    networks:
+      - ecommerce-network
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_INIT_LIMIT: 5
+    healthcheck:
+      test: ["CMD", "echo", "ruok", "|", "nc", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # KAFKA: Message Broker (compatible con KafkaJS)
+  # ---------------------------------------------------------------------------
+  # Apache Kafka official image via Confluent Platform
+  # Compatible 100% con KafkaJS (usado en nuestros servicios)
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-broker
+    hostname: kafka
+    networks:
+      - ecommerce-network
+    ports:
+      - "9092:9092"      # Puerto Kafka para clientes
+      - "29092:29092"    # Puerto interno para Docker
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # ORDERS DATABASE: PostgreSQL
+  # ---------------------------------------------------------------------------
+  # Base de datos dedicada para el servicio de órdenes
+  # Tablas: orders, order_items, order_events
+  # Host: orders-db:5432
+  # Database: orders_db
+  # User: orders_user
+  # Password: (ver .env)
+  # ---------------------------------------------------------------------------
+  orders-db:
+    image: postgres:16-alpine
+    container_name: orders-postgres
+    hostname: orders-db
+    networks:
+      - ecommerce-network
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: orders_db
+      POSTGRES_USER: ${ORDERS_DB_USER:-orders_user}
+      POSTGRES_PASSWORD: ${ORDERS_DB_PASSWORD:-orders_password}
+      POSTGRES_INITDB_ARGS: "-c max_connections=100"
+    volumes:
+      - orders-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${ORDERS_DB_USER:-orders_user} -d orders_db
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # INVENTORY DATABASE: PostgreSQL
+  # ---------------------------------------------------------------------------
+  # Base de datos dedicada para el servicio de inventario
+  # Tablas: inventory, reserved_items, inventory_events
+  # Host: inventory-db:5432
+  # Database: inventory_db
+  # User: inventory_user
+  # Password: (ver .env)
+  # ---------------------------------------------------------------------------
+  inventory-db:
+    image: postgres:16-alpine
+    container_name: inventory-postgres
+    hostname: inventory-db
+    networks:
+      - ecommerce-network
+    ports:
+      - "5433:5432"  # Mapear a puerto diferente para acceso externo
+    environment:
+      POSTGRES_DB: inventory_db
+      POSTGRES_USER: ${INVENTORY_DB_USER:-inventory_user}
+      POSTGRES_PASSWORD: ${INVENTORY_DB_PASSWORD:-inventory_password}
+      POSTGRES_INITDB_ARGS: "-c max_connections=100"
+    volumes:
+      - inventory-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${INVENTORY_DB_USER:-inventory_user} -d inventory_db
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # ORDER SERVICE: Servicio de Órdenes
+  # ---------------------------------------------------------------------------
+  # Stack: Node.js + Hono
+  # Puertos: 3001 (externo) → 3001 (interno)
+  # Responsabilidades:
+  #   - API REST para crear órdenes
+  #   - Publica evento: order.created
+  #   - Consume evento: inventory.reserved / inventory.rejected
+  #   - Actualiza estado de la orden
+  # ---------------------------------------------------------------------------
+  order-service:
+    build:
+      context: .
+      dockerfile: packages/order-service/Dockerfile
+    container_name: order-service
+    hostname: order-service
+    networks:
+      - ecommerce-network
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: production
+      APP_PORT: 3001
+      ORDERS_DB_USER: ${ORDERS_DB_USER:-orders_user}
+      ORDERS_DB_PASSWORD: ${ORDERS_DB_PASSWORD:-orders_password}
+      DATABASE_URL: postgresql://${ORDERS_DB_USER:-orders_user}:${ORDERS_DB_PASSWORD:-orders_password}@orders-db:5432/orders_db
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CLIENT_ID: order-service
+    depends_on:
+      orders-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # INVENTORY SERVICE: Servicio de Inventario
+  # ---------------------------------------------------------------------------
+  # Stack: Node.js + Hono
+  # Puertos: 3002 (externo) → 3002 (interno)
+  # Responsabilidades:
+  #   - API REST para consultar inventario
+  #   - Consume evento: order.created
+  #   - Reserva inventario / rechaza orden
+  #   - Publica evento: inventory.reserved / inventory.rejected
+  # ---------------------------------------------------------------------------
+  inventory-service:
+    build:
+      context: .
+      dockerfile: packages/inventory-service/Dockerfile
+    container_name: inventory-service
+    hostname: inventory-service
+    networks:
+      - ecommerce-network
+    ports:
+      - "3002:3002"
+    environment:
+      NODE_ENV: production
+      APP_PORT: 3002
+      INVENTORY_DB_USER: ${INVENTORY_DB_USER:-inventory_user}
+      INVENTORY_DB_PASSWORD: ${INVENTORY_DB_PASSWORD:-inventory_password}
+      DATABASE_URL: postgresql://${INVENTORY_DB_USER:-inventory_user}:${INVENTORY_DB_PASSWORD:-inventory_password}@inventory-db:5432/inventory_db
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CLIENT_ID: inventory-service
+    depends_on:
+      inventory-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+# =============================================================================
+# VOLÚMENES: Persistencia de datos
+# =============================================================================
+volumes:
+  kafka-data:
+    driver: local
+  orders-db-data:
+    driver: local
+  inventory-db-data:
+    driver: local
+
+# =============================================================================
+# REDES: Comunicación interna entre contenedores
+# =============================================================================
+networks:
+  ecommerce-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

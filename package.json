@@ -1,0 +1,36 @@
+{
+  "name": "ecommerce-event-driven",
+  "version": "1.0.0",
+  "description": "Mini demo e-commerce event-driven con Node.js, Hono, Redpanda y Postgres",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces",
+    "build": "npm run build --workspaces",
+    "start": "npm start --workspaces",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "docker:ps": "docker compose ps",
+    "docker:clean": "docker compose down -v",
+    "test": "npm test --workspaces",
+    "lint": "npm run lint --workspaces"
+  },
+  "keywords": [
+    "event-driven",
+    "kafka",
+    "microservices",
+    "e-commerce",
+    "node.js"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "devDependencies": {}
+}

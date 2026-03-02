@@ -1,0 +1,31 @@
+# docker-compose.override.yml - TEMPLATE
+# 
+# Este archivo es opcional. Úsalo para overrides locales en desarrollo
+# Copia este contenido a docker-compose.override.yml si necesitas customizaciones
+#
+# Las customizaciones comunes incluyen:
+# - Ports diferentes
+# - Volúmenes adicionales para hot-reload
+# - Environment variables locales
+# - Services adicionales (redis, elasticsearch, etc)
+#
+# Ejemplo de uso:
+# 
+# version: "3.8"
+# services:
+#   # Override para orden-service con hot reload
+#   order-service:
+#     volumes:
+#       - ./packages/order-service/src:/app/src
+#       - /app/node_modules
+#     environment:
+#       DEBUG: 'ecommerce:*'
+#
+#   # Override para inventory-service con debug
+#   inventory-service:
+#     volumes:
+#       - ./packages/inventory-service/src:/app/src
+#       - /app/node_modules
+#     environment:
+#       DEBUG: 'ecommerce:*'
+#       LOG_LEVEL: debug
